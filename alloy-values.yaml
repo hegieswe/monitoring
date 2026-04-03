@@ -1,0 +1,63 @@
+alloy:
+  configMap:
+    create: true
+    content: |-
+      logging {
+        level  = "info"
+        format = "logfmt"
+      }
+
+      // ============================================
+      // 1. FORWARD LOG KUBERNETES -> LOKI
+      // ============================================
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      discovery.relabel "pod_logs" {
+        targets = discovery.kubernetes.pods.targets
+        
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          target_label  = "container"
+        }
+      }
+
+      loki.source.kubernetes "pod_logs" {
+        targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.write.default.receiver]
+      }
+
+      loki.write "default" {
+        endpoint {
+          // host.docker.internal digunakan untuk menembak mesin host dari dalam k3d
+          url = "http://host.docker.internal:3100/loki/api/v1/push"
+        }
+      }
+
+      // ============================================
+      // 2. FORWARD METRICS KUBERNETES -> PROMETHEUS
+      // ============================================
+      prometheus.remote_write "local" {
+        endpoint {
+          url = "http://host.docker.internal:9090/api/v1/write"
+        }
+      }
+
+      // (Contoh) Scrape metrik internal Kubelet cAdvisor
+      prometheus.scrape "kubelet" {
+        targets = [{"__address__" = "kubernetes.default.svc.cluster.local:443"}]
+        forward_to = [prometheus.remote_write.local.receiver]
+        scheme = "https"
+        tls_config {
+          insecure_skip_verify = true
+        }
+      }
